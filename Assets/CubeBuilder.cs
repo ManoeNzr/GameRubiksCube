@@ -1,17 +1,22 @@
 using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq; // Nécessaire pour les requêtes LINQ dans RotateRoutine
+
+// Cette classe représentera chaque mini-cube
+
 
 public class RubiksManager : MonoBehaviour
 {
     [Header("Paramètres")]
     public GameObject cubiePrefab;
-    public float spacing = 1.05f; // Espace entre les cubes
+    [Tooltip("La moitié de la distance entre deux centres de pièces (ex: 0.5 * 2.1 = 1.05)")]
+    public float spacing = 1.05f;
     public float rotationSpeed = 500f;
     public int shuffleMoves = 20;
 
-    private List<Transform> allCubies = new List<Transform>();
-    private bool isRotating = false; // Empêche de lancer 2 rotations en même temps
+    private List<Cubie> allCubies = new List<Cubie>();
+    private bool isRotating = false;
 
     void Start()
     {
@@ -19,6 +24,7 @@ public class RubiksManager : MonoBehaviour
         StartCoroutine(ShuffleRoutine());
     }
 
+    // --- CONSTRUCTION DU CUBE ---
     void BuildCube()
     {
         for (int x = -1; x <= 1; x++)
@@ -27,13 +33,19 @@ public class RubiksManager : MonoBehaviour
             {
                 for (int z = -1; z <= 1; z++)
                 {
+                    // Ignorer la pièce centrale invisible
+                    if (x == 0 && y == 0 && z == 0) continue;
+
                     GameObject go = Instantiate(cubiePrefab, transform);
-                    go.transform.localPosition = new Vector3(x * spacing, y * spacing, z * spacing);
+                    Vector3 localPos = new Vector3(x * spacing, y * spacing, z * spacing);
+                    go.transform.localPosition = localPos;
 
-                    // Ajout des stickers (version simplifiée via code ou prefab)
-                    // Assure-toi que ton prefab a bien les stickers ou utilise ton ancienne méthode AddStickers ici
-
-                    allCubies.Add(go.transform);
+                    Cubie cubie = new Cubie
+                    {
+                        transform = go.transform,
+                        initialPosition = localPos // On stocke la position initiale pour référence
+                    };
+                    allCubies.Add(cubie);
                 }
             }
         }
@@ -41,11 +53,23 @@ public class RubiksManager : MonoBehaviour
 
     public bool CanRotate() { return !isRotating; }
 
-    // Appelé par le script d'input ou de mélange
+    // Fonction pour le slider (inchangée)
+    public void SetRotationSpeed(float newSpeed)
+    {
+        rotationSpeed = Mathf.Clamp(newSpeed, 100f, 1500f);
+    }
+
+    // --- ROTATION ---
+
+    // Simplifiée : l'axe est toujours un axe principal positif (X+, Y+, ou Z+)
     public void RotateFace(Vector3 axis, float sliceIndex, bool clockwise = true)
     {
         if (isRotating) return;
-        StartCoroutine(RotateRoutine(axis, sliceIndex, clockwise ? 90f : -90f));
+
+        // Si clockwise est VRAI, on veut l'horaire -> Angle NÉGATIF 
+        float finalAngle = clockwise ? -90f : 90f;
+
+        StartCoroutine(RotateRoutine(axis, sliceIndex, finalAngle));
     }
 
     private IEnumerator RotateRoutine(Vector3 axis, float sliceCoordinate, float angle)
@@ -53,50 +77,54 @@ public class RubiksManager : MonoBehaviour
         isRotating = true;
 
         // 1. Trouver les cubies concernés
-        List<Transform> sliceCubies = new List<Transform>();
+        List<Transform> sliceTransforms = new List<Transform>();
         Transform pivot = new GameObject("Pivot").transform;
         pivot.SetParent(transform);
         pivot.localPosition = Vector3.zero;
         pivot.localRotation = Quaternion.identity;
 
-        foreach (Transform t in allCubies)
-        {
-            // On vérifie la position locale par rapport à l'axe demandé
-            float posOnAxis = Vector3.Dot(t.localPosition, axis);
+        // L'axe pour la vérification est déjà positif (X, Y ou Z)
+        float targetCoord = sliceCoordinate * spacing;
 
-            // On utilise une petite marge d'erreur (epsilon) pour comparer les float
-            if (Mathf.Abs(posOnAxis - (sliceCoordinate * spacing)) < 0.1f)
+        foreach (Cubie cubie in allCubies)
+        {
+            // On vérifie la position de la pièce dans l'espace local du Rubik's Manager.
+            // Vector3.Dot projette la position locale sur l'axe de rotation.
+            float posOnAxis = Vector3.Dot(cubie.transform.localPosition, axis);
+
+            // On utilise une petite marge pour la comparaison
+            if (Mathf.Abs(posOnAxis - targetCoord) < 0.1f)
             {
-                sliceCubies.Add(t);
-                t.SetParent(pivot); // Attacher temporairement au pivot
+                sliceTransforms.Add(cubie.transform);
+                cubie.transform.SetParent(pivot);
             }
         }
 
-        // 2. Animer la rotation
+        // 2. Animer la rotation (inchangé)
         float currentAngle = 0f;
         while (Mathf.Abs(currentAngle) < Mathf.Abs(angle))
         {
             float step = Time.deltaTime * rotationSpeed * Mathf.Sign(angle);
             if (Mathf.Abs(currentAngle + step) > Mathf.Abs(angle))
-                step = angle - currentAngle; // Finir exactement sur l'angle
+                step = angle - currentAngle;
 
             pivot.Rotate(axis, step, Space.Self);
             currentAngle += step;
             yield return null;
         }
 
-        // 3. Nettoyage et Snap (CRUCIAL pour éviter les bugs)
-        foreach (Transform t in sliceCubies)
+        // 3. Nettoyage et Snap (CRUCIAL)
+        foreach (Transform t in sliceTransforms)
         {
             t.SetParent(transform);
-            // On force les positions à être des multiples parfaits de 'spacing'
+
+            // On force les positions et rotations à des multiples parfaits (Snap)
             t.localPosition = new Vector3(
                 Mathf.Round(t.localPosition.x / spacing) * spacing,
                 Mathf.Round(t.localPosition.y / spacing) * spacing,
                 Mathf.Round(t.localPosition.z / spacing) * spacing
             );
 
-            // Idem pour la rotation, on force à 90° près
             Vector3 euler = t.localEulerAngles;
             t.localEulerAngles = new Vector3(
                 Mathf.Round(euler.x / 90f) * 90f,
@@ -109,22 +137,34 @@ public class RubiksManager : MonoBehaviour
         isRotating = false;
     }
 
+    // --- MÉLANGE ---
     private IEnumerator ShuffleRoutine()
     {
-        // Petite pause avant de commencer
         yield return new WaitForSeconds(1f);
 
+        // On utilise les axes positifs pour la rotation
         Vector3[] axes = { Vector3.right, Vector3.up, Vector3.forward };
-        float[] slices = { -1f, 0f, 1f }; // Gauche/Milieu/Droite
+        // On choisit aléatoirement les tranches externes (1 ou -1)
+        float[] indices = { 1f, -1f };
 
         for (int i = 0; i < shuffleMoves; i++)
         {
             Vector3 ax = axes[Random.Range(0, axes.Length)];
-            float sl = slices[Random.Range(0, slices.Length)];
+            float sliceIndex = indices[Random.Range(0, indices.Length)];
             bool dir = Random.value > 0.5f;
 
-            // On lance la rotation et on attend qu'elle finisse
-            yield return StartCoroutine(RotateRoutine(ax, sl, dir ? 90f : -90f));
+            // On utilise la rotation de face externe
+            RotateFace(ax, sliceIndex, dir);
+
+            // Attendre la fin de la rotation
+            yield return new WaitUntil(() => !isRotating);
+            yield return new WaitForSeconds(0.1f); // Petite pause
         }
     }
+}
+
+public class Cubie
+{
+    public Transform transform;
+    public Vector3 initialPosition; // Position d'origine (utilisée pour la détection)
 }
